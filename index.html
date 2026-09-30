@@ -61,9 +61,10 @@ const defaults=[
 ];
 let state=JSON.parse(localStorage.getItem("budgetState")||"null");
 if(!state){
- state={income:1050,cats:Object.fromEntries(defaults.map(x=>[x[0],{monthly:x[1],rule:x[2],balance:0}])),tx:[],transfers:[]};
+ state={income:1050,cats:Object.fromEntries(defaults.map(x=>[x[0],{monthly:x[1],rule:x[2],balance:0}])),tx:[],transfers:[],lastMonth:key()};
 }else{
  state.transfers=state.transfers||[];
+ state.lastMonth=state.lastMonth||key();
  for(const [k,m,r] of defaults) if(!state.cats[k]) state.cats[k]={monthly:m,rule:r,balance:0};
 }
 function save(){localStorage.setItem("budgetState",JSON.stringify(state))}
@@ -75,14 +76,24 @@ document.getElementById("monthLabel").textContent=monthName();
 function spent(cat,k=key()){
  let c=state.cats[cat];
  let actual=state.tx.filter(x=>x.month===k&&x.cat===cat).reduce((a,x)=>a+x.amount,0);
- // Fixed costs are treated as paid automatically for the current month.
  if(c?.rule==="fixed") return k===key()?c.monthly+actual:actual;
  return actual;
 }
-function balance(cat){return state.cats[cat]?.balance||0}
-function available(cat){let c=state.cats[cat];if(c?.rule==="fixed")return 0;return balance(cat)+c.monthly-spent(cat)}
+function monthNet(cat,k){
+ const c=state.cats[cat]; if(!c||c.rule==="fixed") return 0;
+ const contribution=c.monthly||0;
+ const actual=state.tx.filter(x=>x.month===k&&x.cat===cat).reduce((a,x)=>a+x.amount,0);
+ const incoming=state.transfers.filter(t=>t.month===k&&t.to===cat).reduce((a,t)=>a+t.amount,0);
+ const outgoing=state.transfers.filter(t=>t.month===k&&t.from===cat).reduce((a,t)=>a+t.amount,0);
+ return contribution+incoming-outgoing-actual;
+}
+function balance(cat){
+ const c=state.cats[cat]; if(!c||c.rule==="fixed") return 0;
+ return (c.balance||0)+monthNet(cat,key());
+}
+function available(cat){let c=state.cats[cat];if(!c||c.rule==="fixed")return 0;return balance(cat)}
 function ruleText(r){if(r==="fixed")return"fixed · counted automatically";if(r==="rollover")return"rolls over";if(r==="fund")return"sinking fund";let p=r.split(":");return`cap ${euro(+p[1])} → ${p[2]||"Don't transfer"}`}
-function pctFor(cat){let c=state.cats[cat];if(c?.rule==="fixed")return 100;let base=Math.max(1,balance(cat)+c.monthly);return Math.min(100,Math.max(0,spent(cat)/base*100))}
+function pctFor(cat){let c=state.cats[cat];if(c?.rule==="fixed")return 100;let base=Math.max(1,(c.balance||0)+c.monthly);return Math.min(100,Math.max(0,spent(cat)/base*100))}
 function renderTab(tab){
  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));
  let el=document.getElementById("app");
@@ -218,26 +229,56 @@ function deleteFund(name){
  delete state.cats[name];save();renderTab("settings");
 }
 function applyCapsForMonth(month){
- // Move amounts above caps from capped categories into their selected destinations.
- // A transfer is recorded once per category/month.
+ // Capped pots roll forward. Spending reduces the pot; monthly money is added;
+ // anything above the cap is transferred to the selected destination.
  for(const [name,c] of Object.entries(state.cats)){
    if(!c.rule.startsWith("cap:"))continue;
    const p=c.rule.split(":"), cap=+p[1], dest=p.slice(2).join(":");
    if(!dest || !state.cats[dest])continue;
-   const monthSpent=spent(name,month);
-   const carried=(c.balance||0);
-   const availableBefore=carried+c.monthly-monthSpent;
-   if(availableBefore<=cap)continue;
-   const excess=availableBefore-cap;
-   const already=state.transfers.filter(t=>t.month===month&&t.from===name&&t.to===dest).reduce((s,t)=>s+t.amount,0);
+   const carried=c.balance||0;
+   const actual=state.tx.filter(x=>x.month===month&&x.cat===name).reduce((a,x)=>a+x.amount,0);
+   const incoming=state.transfers.filter(t=>t.month===month&&t.to===name).reduce((a,t)=>a+t.amount,0);
+   const outgoing=state.transfers.filter(t=>t.month===month&&t.from===name).reduce((a,t)=>a+t.amount,0);
+   const beforeTransfer=carried+c.monthly+incoming-outgoing-actual;
+   const already=state.transfers.filter(t=>t.month===month&&t.from===name&&t.to===dest).reduce((a,t)=>a+t.amount,0);
+   const excess=Math.max(0,beforeTransfer-cap);
    const amount=Math.max(0,excess-already);
-   if(amount<=0)continue;
-   c.balance=Math.max(0,availableBefore-amount);
-   state.cats[dest].balance=(state.cats[dest].balance||0)+amount;
-   state.transfers.push({id:crypto.randomUUID(),month,from:name,to:dest,amount});
+   if(amount>0) state.transfers.push({id:crypto.randomUUID(),month,from:name,to:dest,amount});
  }
 }
-function closeMonthAndApplyCaps(month=key()){applyCapsForMonth(month);save();}
+function monthBefore(k){
+ let [y,m]=k.split("-").map(Number); m--; if(m===0){y--;m=12;}
+ return y+"-"+String(m).padStart(2,"0");
+}
+function advanceMonths(){
+ const now=key();
+ let last=state.lastMonth||now;
+ if(last===now)return;
+ // Walk month by month so deficits and saved pots carry into the next month.
+ while(last!==now){
+   applyCapsForMonth(last);
+   for(const c of Object.values(state.cats)){
+     if(c.rule!=="fixed") c.balance=(c.balance||0)+monthNetForOpening(c,last);
+   }
+   last=nextMonth(last);
+   state.lastMonth=last;
+ }
+ save();
+}
+function nextMonth(k){
+ let [y,m]=k.split("-").map(Number); m++; if(m===13){y++;m=1;}
+ return y+"-"+String(m).padStart(2,"0");
+}
+function monthNetForOpening(catObj,k){
+ // Use the month that just closed to turn its opening balance into the next opening balance.
+ const name=Object.keys(state.cats).find(n=>state.cats[n]===catObj);
+ if(!name)return 0;
+ const actual=state.tx.filter(x=>x.month===k&&x.cat===name).reduce((a,x)=>a+x.amount,0);
+ const incoming=state.transfers.filter(t=>t.month===k&&t.to===name).reduce((a,t)=>a+t.amount,0);
+ const outgoing=state.transfers.filter(t=>t.month===k&&t.from===name).reduce((a,t)=>a+t.amount,0);
+ return (catObj.monthly||0)+incoming-outgoing-actual;
+}
+function closeMonthAndApplyCaps(){advanceMonths();applyCapsForMonth(key());save();}
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>renderTab(b.dataset.tab));
 closeMonthAndApplyCaps(key());
 renderTab("month");
