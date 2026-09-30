@@ -32,7 +32,7 @@ input,select{width:100%;padding:11px 12px;border:1px solid var(--line);border-ra
 .pill{font-size:12px;padding:4px 8px;border-radius:999px;background:var(--blue2)}.danger{color:#a44;background:none;padding:4px}
 .empty{padding:25px 5px;text-align:center;color:var(--muted)}
 .circleWrap{display:flex;align-items:center;gap:18px}.circle{width:116px;height:116px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--blue) var(--pct),#e9f0f5 0);flex:0 0 auto}.circle:after{content:"";width:82px;height:82px;border-radius:50%;background:#fff;position:absolute}.circleInner{position:relative;z-index:1;text-align:center}.circleInner strong{display:block;font-size:18px}.circleInner span{font-size:11px;color:var(--muted)}
-.categoryGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.catCard{background:#fff;border:1px solid var(--line);border-radius:16px;padding:12px;box-shadow:var(--shadow);cursor:pointer}.catCard:nth-child(3n){background:#fdfaff}.catCard:nth-child(3n+2){background:#fbfffd}
+.categoryGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.catCard{background:#fff;border:1px solid var(--line);border-radius:16px;padding:12px;box-shadow:var(--shadow);cursor:pointer}.catCard:nth-child(4n+1) .bar i{background:var(--lav)}.catCard:nth-child(4n+2) .bar i{background:var(--sage)}.catCard:nth-child(4n+3) .bar i{background:var(--peach)}.catCard:nth-child(4n) .bar i{background:var(--butter)}.catCard:nth-child(4n+1){background:#fcfaff}.catCard:nth-child(4n+2){background:#fbfffc}.catCard:nth-child(4n+3){background:#fffaf7}.catCard:nth-child(4n){background:#fffdf5}
 .monthBlock{border:1px solid var(--line);border-radius:15px;padding:13px;margin-bottom:10px;background:#fff}.activity{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #edf1f4}.activity:last-child{border-bottom:0}.plus{color:var(--good)}.minus{color:var(--warn)}
 footer{position:fixed;bottom:0;left:0;right:0;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:#eef5fbdf;backdrop-filter:blur(12px);border-top:1px solid var(--line);z-index:10}
 footer button{width:100%;max-width:760px;display:block;margin:auto;font-size:16px;padding:13px}
@@ -72,25 +72,31 @@ function key(d=new Date()){return d.getFullYear()+"-"+String(d.getMonth()+1).pad
 function label(k){let [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleDateString("en-GB",{month:"long",year:"numeric"})}
 function monthName(){return label(key())}
 document.getElementById("monthLabel").textContent=monthName();
-function spent(cat,k=key()){return state.tx.filter(x=>x.month===k&&x.cat===cat).reduce((a,x)=>a+x.amount,0)}
+function spent(cat,k=key()){
+ let c=state.cats[cat];
+ let actual=state.tx.filter(x=>x.month===k&&x.cat===cat).reduce((a,x)=>a+x.amount,0);
+ // Fixed costs are treated as paid automatically for the current month.
+ if(c?.rule==="fixed") return k===key()?c.monthly+actual:actual;
+ return actual;
+}
 function balance(cat){return state.cats[cat]?.balance||0}
-function available(cat){let c=state.cats[cat];return balance(cat)+c.monthly-spent(cat)}
-function ruleText(r){if(r==="fixed")return"fixed";if(r==="rollover")return"rolls over";if(r==="fund")return"sinking fund";let p=r.split(":");return`cap ${euro(+p[1])} → ${p[2]}`}
-function pctFor(cat){let c=state.cats[cat],base=Math.max(1,balance(cat)+c.monthly);return Math.min(100,Math.max(0,spent(cat)/base*100))}
+function available(cat){let c=state.cats[cat];if(c?.rule==="fixed")return 0;return balance(cat)+c.monthly-spent(cat)}
+function ruleText(r){if(r==="fixed")return"fixed · counted automatically";if(r==="rollover")return"rolls over";if(r==="fund")return"sinking fund";let p=r.split(":");return`cap ${euro(+p[1])} → ${p[2]||"Don't transfer"}`}
+function pctFor(cat){let c=state.cats[cat];if(c?.rule==="fixed")return 100;let base=Math.max(1,balance(cat)+c.monthly);return Math.min(100,Math.max(0,spent(cat)/base*100))}
 function renderTab(tab){
  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));
  let el=document.getElementById("app");
  if(tab==="month")renderMonth(el);else if(tab==="funds")renderFunds(el);else if(tab==="transactions")renderTx(el);else if(tab==="history")renderHistory(el);else renderSettings(el);
 }
 function renderMonth(el){
- let monthSpend=state.tx.filter(x=>x.month===key()).reduce((s,x)=>s+x.amount,0), remaining=state.income-monthSpend;
+ let monthSpend=Object.keys(state.cats).filter(k=>state.cats[k].rule!=="fund").reduce((s,k)=>s+spent(k,key()),0), remaining=state.income-monthSpend;
  let travel=balance("Travel"), travelGoal=Math.max(1,travel+state.cats.Travel.monthly);
  el.innerHTML=`<div class="grid">
  <div class="card"><div class="label">Income</div><div class="big">${euro(state.income)}</div></div>
  <div class="card"><div class="label">Spent</div><div class="big">${euro(monthSpend)}</div></div>
  <div class="card"><div class="label">Left this month</div><div class="big ${remaining<0?'negative':''}">${euro(remaining)}</div></div>
  <div class="card"><div class="label">Travel fund</div><div class="big">${euro(travel)}</div></div></div>
- <div class="card"><div class="circleWrap"><div class="circle" style="--pct:${Math.min(100,monthSpend/state.income*100)}%"><div class="circleInner"><strong>${Math.round(Math.min(100,monthSpend/state.income*100))}%</strong><span>spent</span></div></div><div><h2>Monthly overview</h2><div class="sub">${euro(monthSpend)} of ${euro(state.income)} used</div><p class="small">Tap a category below to see its balance and activity.</p></div></div></div>
+ <div class="card"><div class="circleWrap"><div class="circle" style="--pct:${Math.min(100,monthSpend/state.income*100)}%"><div class="circleInner"><strong>${Math.round(Math.min(100,monthSpend/state.income*100))}%</strong><span>spent</span></div></div><div><h2>Monthly overview</h2><div class="sub">${euro(monthSpend)} of ${euro(state.income)} used</div><p class="small">Fixed categories are counted automatically. Other categories use your spending entries or fund contributions.</p></div></div></div>
  <div class="card"><div class="row"><h2>Categories</h2><span class="pill">${Object.keys(state.cats).length}</span></div><div class="categoryGrid">${Object.entries(state.cats).map(([k,c])=>`<div class="catCard" onclick="openFund('${esc(k)}')"><div class="row"><strong>${k}</strong><span class="small">${euro(available(k))}</span></div><div class="bar"><i style="width:${pctFor(k)}%"></i></div><div class="small" style="margin-top:6px">${euro(c.monthly)}/month · ${ruleText(c.rule)}</div></div>`).join("")}</div></div>`;
 }
 function renderFunds(el){
@@ -115,6 +121,7 @@ function fundActivities(cat){
  for(let m of arr){
   let entries=[];
   if(c.rule==="fund") entries.push({type:"plus",label:"Monthly contribution",amount:c.monthly});
+  if(c.rule==="fixed" && m===key()) entries.push({type:"minus",label:"Fixed monthly expense (automatic)",amount:c.monthly});
   let tx=state.tx.filter(x=>x.cat===cat&&x.month===m);
   for(let x of tx) entries.push({type:"minus",label:x.note||"Spending",amount:x.amount,date:x.date});
   let transfers=state.transfers.filter(x=>(x.to===cat||x.from===cat)&&x.month===m);
@@ -150,19 +157,26 @@ function renderSettings(el){
  <label>Monthly income<input id="income" type="number" step=".01" value="${state.income}"></label>
  <button class="primary" onclick="saveIncome()">Save income</button></div></div>
  <div class="card"><div class="row"><h2>Categories</h2><span class="pill">editable</span></div>
- <p class="sub">Change monthly amounts, caps and where excess money should go. Funds can also be created below.</p>
+ <p class="sub">Change monthly amounts and choose what each category means: fixed, flexible rollover, capped pot, or sinking fund. Funds can also be created below.</p>
  <div class="list">${Object.entries(state.cats).map(([k,c])=>{
    let parts=c.rule.split(":"), cap=parts[0]==="cap"?parts[1]:"", dest=parts[0]==="cap"?parts.slice(2).join(":"):"";
    return `<div class="item">
     <div class="row"><strong>${esc(k)}</strong><span class="small">${ruleText(c.rule)}</span></div>
     <div class="two">
       <label class="small">Monthly<input data-cat="${encodeURIComponent(k)}" class="monthly" type="number" step=".01" value="${c.monthly}"></label>
-      <label class="small">Current balance<input data-cat="${encodeURIComponent(k)}" class="balance" type="number" step=".01" value="${c.balance||0}"></label>
+      <label class="small">Type<select data-cat="${encodeURIComponent(k)}" class="ruleType">
+        <option value="fixed" ${parts[0]==="fixed"?"selected":""}>Fixed — automatic</option>
+        <option value="rollover" ${parts[0]==="rollover"?"selected":""}>Flexible — rolls over</option>
+        <option value="cap" ${parts[0]==="cap"?"selected":""}>Capped pot</option>
+        <option value="fund" ${parts[0]==="fund"?"selected":""}>Sinking fund</option>
+      </select></label>
     </div>
-    ${parts[0]==="cap"?`<div class="two" style="margin-top:8px">
-      <label class="small">Cap<input data-cat="${encodeURIComponent(k)}" class="cap" type="number" step=".01" value="${cap}"></label>
-      <label class="small">Excess goes to<select data-cat="${encodeURIComponent(k)}" class="dest">${options.filter(x=>x!==k).map(x=>`<option ${x===dest?"selected":""}>${esc(x)}</option>`).join("")}<option value="__NONE__" ${!dest?"selected":""}>Don't transfer</option></select></label>
-    </div>`:""}
+    <div class="two" style="margin-top:8px">
+      <label class="small">Current balance<input data-cat="${encodeURIComponent(k)}" class="balance" type="number" step=".01" value="${c.balance||0}"></label>
+      ${parts[0]==="cap"?`<label class="small">Cap<input data-cat="${encodeURIComponent(k)}" class="cap" type="number" step=".01" value="${cap}"></label>`:`<div></div>`}
+    </div>
+    ${parts[0]==="cap"?`<label class="small" style="margin-top:8px;display:block">Excess goes to<select data-cat="${encodeURIComponent(k)}" class="dest">${options.filter(x=>x!==k).map(x=>`<option ${x===dest?"selected":""}>${esc(x)}</option>`).join("")}<option value="__NONE__" ${!dest?"selected":""}>Don't transfer</option></select></label>`:""}
+    <div class="small" style="margin-top:8px">${parts[0]==="fixed"?"The monthly amount is counted automatically as committed spending. Change the amount here whenever your fixed cost changes.":parts[0]==="fund"?"This is a sinking fund; its monthly amount is added to the fund.":parts[0]==="cap"?"Unused money rolls forward up to the cap, then excess can be transferred.":"Spending is entered manually and unused budget can roll forward."}</div>
    </div>`}).join("")}</div>
  <button class="primary" onclick="saveRules()">Save changes</button></div>
  <div class="card"><h2>Create a fund</h2><p class="sub">Make a new sinking fund whenever you need one. It will automatically become available as a transfer destination.</p>
@@ -174,11 +188,17 @@ function saveIncome(){state.income=+document.getElementById("income").value||0;s
 function saveRules(){
  document.querySelectorAll(".monthly").forEach(i=>state.cats[decodeURIComponent(i.dataset.cat)].monthly=+i.value||0);
  document.querySelectorAll(".balance").forEach(i=>state.cats[decodeURIComponent(i.dataset.cat)].balance=+i.value||0);
- document.querySelectorAll(".cap").forEach(i=>{
-   const k=decodeURIComponent(i.dataset.cat), c=state.cats[k];
-   const destEl=document.querySelector(`.dest[data-cat="${i.dataset.cat}"]`);
-   const dest=destEl && destEl.value!=="__NONE__"?destEl.value:"";
-   c.rule=`cap:${+i.value||0}:${dest}`;
+ document.querySelectorAll(".ruleType").forEach(i=>{
+   const k=decodeURIComponent(i.dataset.cat), c=state.cats[k], type=i.value;
+   if(type==="cap"){
+     const capEl=document.querySelector(`.cap[data-cat="${i.dataset.cat}"]`);
+     const destEl=document.querySelector(`.dest[data-cat="${i.dataset.cat}"]`);
+     const cap=capEl?+capEl.value||0:0;
+     const dest=destEl && destEl.value!=="__NONE__"?destEl.value:"";
+     c.rule=`cap:${cap}:${dest}`;
+   }else{
+     c.rule=type;
+   }
  });
  save(); renderTab("settings");
 }
