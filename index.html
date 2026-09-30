@@ -56,12 +56,12 @@ footer button{width:100%;max-width:760px;display:block;margin:auto;font-size:16p
 const defaults=[
 ["Housing + utilities",450,"fixed"],["Groceries",220,"rollover"],["Health insurance",141,"fixed"],["University",60,"fixed"],
 ["Transport",30,"cap:90:Travel"],["Household",15,"cap:50:Household Wishlist"],["Personal care",5,"cap:30:Travel"],
-["Health",5,"cap:100:Other"],["Clothes",15,"cap:100:Travel"],["Hobbies",15,"cap:200:Travel"],
-["Social / leisure",25,"cap:200:Travel"],["Travel",25,"fund"],["Gifts",5,"fund"],["Christmas",10,"fund"],["General savings",29,"fund"]
+["Health",5,"cap:100:General savings"],["Clothes",15,"cap:100:Travel"],["Hobbies",15,"cap:200:Travel"],
+["Social / leisure",25,"cap:200:Travel"],["Travel",25,"fund"],["Gifts",5,"fund"],["Christmas",10,"fund"],["General savings",29,"fund"],["Household Wishlist",0,"fund"]
 ];
 let state=JSON.parse(localStorage.getItem("budgetState")||"null");
 if(!state){
- state={income:1050,cats:Object.fromEntries(defaults.map(x=>[x[0],{monthly:x[1],rule:x[2],balance:0}])),tx:[],transfers:[],lastMonth:key()};
+ state={income:1050,cats:Object.fromEntries(defaults.map(x=>[x[0],{monthly:x[1],rule:x[2],balance:0}])),tx:[],transfers:[],lastMonth:key(),accountingVersion:8};
 }else{
  state.transfers=state.transfers||[];
  state.lastMonth=state.lastMonth||key();
@@ -79,22 +79,20 @@ function spent(cat,k=key()){
  if(c?.rule==="fixed") return k===key()?c.monthly+actual:actual;
  return actual;
 }
-function monthNet(cat,k){
- const c=state.cats[cat]; if(!c||c.rule==="fixed") return 0;
- const contribution=c.monthly||0;
- const actual=state.tx.filter(x=>x.month===k&&x.cat===cat).reduce((a,x)=>a+x.amount,0);
- const incoming=state.transfers.filter(t=>t.month===k&&t.to===cat).reduce((a,t)=>a+t.amount,0);
- const outgoing=state.transfers.filter(t=>t.month===k&&t.from===cat).reduce((a,t)=>a+t.amount,0);
- return contribution+incoming-outgoing-actual;
+function actualFor(cat,k=key()){
+ return state.tx.filter(x=>x.month===k&&x.cat===cat).reduce((a,x)=>a+x.amount,0);
 }
 function balance(cat){
  const c=state.cats[cat]; if(!c||c.rule==="fixed") return 0;
- return (c.balance||0)+monthNet(cat,key());
+ const actual=actualFor(cat,key());
+ if(c.rule==="fund"||c.rule.startsWith("cap:")) return (c.balance||0)-Math.max(0,actual-(c.monthly||0));
+ return (c.balance||0)+(c.monthly||0)-actual;
 }
-function available(cat){let c=state.cats[cat];if(!c||c.rule==="fixed")return 0;return balance(cat)}
+function available(cat){return balance(cat)}
 function ruleText(r){if(r==="fixed")return"fixed · counted automatically";if(r==="rollover")return"rolls over";if(r==="fund")return"sinking fund";let p=r.split(":");return`cap ${euro(+p[1])} → ${p[2]||"Don't transfer"}`}
 function pctFor(cat){let c=state.cats[cat];if(!c)return 0;if(c.rule==="fixed")return 100;if(c.rule==="fund")return 100;let base=Math.max(1,(c.balance||0)+c.monthly);return Math.min(100,Math.max(0,spent(cat)/base*100))}
 function renderTab(tab){
+ advanceMonths();
  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));
  let el=document.getElementById("app");
  if(tab==="month")renderMonth(el);else if(tab==="funds")renderFunds(el);else if(tab==="transactions")renderTx(el);else if(tab==="history")renderHistory(el);else renderSettings(el);
@@ -102,24 +100,29 @@ function renderTab(tab){
 function renderMonth(el){
  let k=key();
  let fixedCommitted=Object.values(state.cats).filter(c=>c.rule==="fixed").reduce((s,c)=>s+(c.monthly||0),0);
- // Money moved into a fund/pot is no longer free cash, so it counts against this month's income.
- // Spending that later comes out of that already-funded pot must NOT be counted a second time.
- let potAllocations=Object.values(state.cats).filter(c=>c.rule==="fund"||c.rule.startsWith("cap:")).reduce((s,c)=>s+(c.monthly||0),0);
- let spendingFromAlreadyFundedPots=state.tx.filter(x=>x.month===k && (state.cats[x.cat]?.rule==="fund" || state.cats[x.cat]?.rule?.startsWith("cap:"))).reduce((s,x)=>s+x.amount,0);
- let actualFlexibleSpending=state.tx.filter(x=>x.month===k && !(state.cats[x.cat]?.rule==="fund" || state.cats[x.cat]?.rule?.startsWith("cap:"))).reduce((s,x)=>s+x.amount,0);
- let monthSpend=fixedCommitted+actualFlexibleSpending, usedBudget=monthSpend+potAllocations, remaining=state.income-usedBudget;
- let travel=balance("Travel"), travelGoal=Math.max(1,travel+state.cats.Travel.monthly);
+ let actualTransactions=state.tx.filter(x=>x.month===k).reduce((s,x)=>s+x.amount,0);
+ let currentMonthUse=0;
+ for(const [name,c] of Object.entries(state.cats)){
+   const actual=actualFor(name,k);
+   if(c.rule==="fixed") continue;
+   if(c.rule==="fund"||c.rule.startsWith("cap:")) currentMonthUse+=Math.min(actual,Math.max(0,c.monthly||0));
+   else currentMonthUse+=actual;
+ }
+ const monthSpend=fixedCommitted+actualTransactions;
+ const usedBudget=fixedCommitted+currentMonthUse;
+ const remaining=state.income-usedBudget;
+ let travel=balance("Travel");
  el.innerHTML=`<div class="grid">
  <div class="card"><div class="label">Income</div><div class="big">${euro(state.income)}</div></div>
- <div class="card"><div class="label">Spent</div><div class="big">${euro(monthSpend)}</div></div>
+ <div class="card"><div class="label">Spent this month</div><div class="big">${euro(monthSpend)}</div></div>
  <div class="card"><div class="label">Left this month</div><div class="big ${remaining<0?'negative':''}">${euro(remaining)}</div></div>
  <div class="card"><div class="label">Travel fund</div><div class="big">${euro(travel)}</div></div></div>
- <div class="card"><div class="circleWrap"><div class="circle" style="--pct:${Math.min(100,Math.max(0,usedBudget/state.income*100))}%"><div class="circleInner"><strong>${Math.round(Math.min(100,Math.max(0,usedBudget/state.income*100)))}%</strong><span>used</span></div></div><div><h2>Monthly overview</h2><div class="sub">${euro(usedBudget)} of ${euro(state.income)} used / allocated</div><p class="small">Fixed costs, flexible spending, and money moved into funds or pots count against this month's €${euro(state.income)}. Spending from money that was already put into a fund or pot is not counted a second time.</p></div></div></div>
+ <div class="card"><div class="circleWrap"><div class="circle" style="--pct:${Math.min(100,Math.max(0,usedBudget/state.income*100))}%"><div class="circleInner"><strong>${Math.round(Math.min(100,Math.max(0,usedBudget/state.income*100)))}%</strong><span>used</span></div></div><div><h2>Monthly budget</h2><div class="sub">${euro(usedBudget)} of ${euro(state.income)} used from this month's money</div><p class="small">“Spent this month” includes all purchases, including spending from older fund balances. “Left this month” only decreases when you use this month's budget. Unused sinking-fund and capped-pot allocations move at month-end, when you next open the app.</p></div></div></div>
  <div class="card"><div class="row"><h2>Categories</h2><span class="pill">${Object.keys(state.cats).length}</span></div><div class="categoryGrid">${Object.entries(state.cats).map(([k,c])=>`<div class="catCard" onclick="openFund('${esc(k)}')"><div class="row"><strong>${k}</strong><span class="small">${euro(available(k))}</span></div><div class="bar"><i style="width:${pctFor(k)}%"></i></div><div class="small" style="margin-top:6px">${euro(c.monthly)}/month · ${ruleText(c.rule)}</div></div>`).join("")}</div></div>`;
 }
 function renderFunds(el){
- let names=["Travel","Household","Gifts","Christmas","General savings"];
- el.innerHTML=`<div class="card"><h2>Your funds</h2><p class="sub">Tap a fund to see its month-by-month activity, including contributions and spending.</p><div class="categoryGrid">${names.map(k=>{let c=state.cats[k];return `<div class="catCard" onclick="openFund('${esc(k)}')"><h3>${k}</h3><div class="big">${euro(balance(k))}</div><div class="small">+ ${euro(c.monthly)} / month</div></div>`}).join("")}</div></div>
+ let names=Object.entries(state.cats).filter(([k,c])=>c.rule==="fund").map(([k])=>k);
+ el.innerHTML=`<div class="card"><h2>Your funds</h2><p class="sub">Unused monthly allocations move into funds at month-end. History labels these as “End of month transfer (Month Year)”.</p><div class="categoryGrid">${names.map(k=>{let c=state.cats[k];return `<div class="catCard" onclick="openFund('${esc(k)}')"><h3>${k}</h3><div class="big">${euro(balance(k))}</div><div class="small">+ ${euro(c.monthly)} / month</div></div>`}).join("")}</div></div>
  <div class="card"><h2>Capped categories</h2><p class="sub">These are your little rolling pots. When they reach their cap, future excess can be moved to the destination shown in your rules.</p><div class="list">${Object.entries(state.cats).filter(([k,c])=>c.rule.startsWith("cap:")).map(([k,c])=>`<div class="item" onclick="openFund('${esc(k)}')"><div class="row"><strong>${k}</strong><span>${euro(balance(k))}</span></div><div class="small">${ruleText(c.rule)}</div></div>`).join("")}</div></div>`;
 }
 function renderTx(el){
@@ -134,22 +137,30 @@ function renderHistory(el){
  <div class="card"><h2>Fund history</h2><div class="list">${Object.entries(state.cats).filter(([k,c])=>c.rule==="fund"||c.rule.startsWith("cap:")).map(([k,c])=>`<div class="item" onclick="openFund('${esc(k)}')"><div class="row"><strong>${k}</strong><span>${euro(balance(k))}</span></div><div class="small">View contributions and spending →</div></div>`).join("")}</div></div>`;
 }
 function fundActivities(cat){
- let c=state.cats[cat], months=new Set(state.tx.filter(x=>x.cat===cat).map(x=>x.month));months.add(key());
+ let c=state.cats[cat];
+ let months=new Set(state.tx.filter(x=>x.cat===cat).map(x=>x.month));
+ for(const t of state.transfers) if(t.to===cat||t.from===cat) months.add(t.month);
+ months.add(key());
  let arr=[...months].sort().reverse(), out=[];
  for(let m of arr){
   let entries=[];
-  if(c.rule==="fund") entries.push({type:"plus",label:"Monthly contribution",amount:c.monthly});
-  if(c.rule==="fixed" && m===key()) entries.push({type:"minus",label:"Fixed monthly expense (automatic)",amount:c.monthly});
-  let tx=state.tx.filter(x=>x.cat===cat&&x.month===m);
-  for(let x of tx) entries.push({type:"minus",label:x.note||"Spending",amount:x.amount,date:x.date});
+  if(c.rule==="fixed") entries.push({type:"minus",label:"Fixed monthly expense (automatic)",amount:c.monthly});
+  if((c.rule==="fund"||c.rule.startsWith("cap:"))&&m===key()){
+    let tx=state.tx.filter(x=>x.cat===cat&&x.month===m).sort((a,b)=>(a.date+a.id).localeCompare(b.date+b.id));
+    let used=0;
+    for(let x of tx){let fromOld=Math.max(0,used+x.amount-(c.monthly||0))-Math.max(0,used-(c.monthly||0));if(fromOld>0)entries.push({type:"minus",label:`From existing fund: ${x.note||"Spending"}`,amount:fromOld,date:x.date});used+=x.amount;}
+  } else if(c.rule!=="fund"&&!c.rule.startsWith("cap:")) {
+    let tx=state.tx.filter(x=>x.cat===cat&&x.month===m);
+    for(let x of tx) entries.push({type:"minus",label:x.note||"Spending",amount:x.amount,date:x.date});
+  }
   let transfers=state.transfers.filter(x=>(x.to===cat||x.from===cat)&&x.month===m);
-  for(let x of transfers) entries.push({type:x.to===cat?"plus":"minus",label:(x.to===cat?"Transfer from ":"Transfer to ")+(x.to===cat?x.from:x.to),amount:x.amount});
+  for(let x of transfers) entries.push({type:x.to===cat?"plus":"minus",label:x.label||((x.to===cat?"Transfer from ":"Transfer to ")+(x.to===cat?x.from:x.to)),amount:x.amount});
   if(entries.length) out.push({m,entries});
  }
  return out;
 }
 function openFund(cat){
- closeMonthAndApplyCaps(key());
+ advanceMonths();
  let c=state.cats[cat], acts=fundActivities(cat);
  let modal=document.createElement("div");modal.className="modal";
  modal.innerHTML=`<div class="sheet"><button class="back" onclick="this.closest('.modal').remove()">← Back</button><div class="circleWrap"><div class="circle" style="--pct:${Math.min(100,Math.max(0,(balance(cat)/(c.rule.startsWith('cap:')?+c.rule.split(':')[1]:Math.max(100,balance(cat)+c.monthly)))*100))}%"><div class="circleInner"><strong>${euro(balance(cat))}</strong><span>current</span></div></div><div><h2>${cat}</h2><div class="sub">${euro(c.monthly)} added each month · ${ruleText(c.rule)}</div></div></div><div class="card" style="margin-top:16px"><h3>Activity</h3>${acts.length?acts.map(a=>`<div class="monthBlock"><div class="row"><strong>${label(a.m)}</strong><span class="small">${a.entries.length} entries</span></div>${a.entries.map(e=>`<div class="activity"><span>${esc(e.label)}${e.date?`<span class="small"> · ${e.date}</span>`:""}</span><strong class="${e.type}">${e.type==="plus"?"+":"−"}${euro(e.amount)}</strong></div>`).join("")}</div>`).join(""):`<div class="empty">No activity yet.</div>`}</div></div>`;
@@ -194,7 +205,7 @@ function renderSettings(el){
       ${parts[0]==="cap"?`<label class="small">Cap<input data-cat="${encodeURIComponent(k)}" class="cap" type="number" step=".01" value="${cap}"></label>`:`<div></div>`}
     </div>
     ${parts[0]==="cap"?`<label class="small" style="margin-top:8px;display:block">Excess goes to<select data-cat="${encodeURIComponent(k)}" class="dest">${options.filter(x=>x!==k).map(x=>`<option ${x===dest?"selected":""}>${esc(x)}</option>`).join("")}<option value="__NONE__" ${!dest?"selected":""}>Don't transfer</option></select></label>`:""}
-    <div class="small" style="margin-top:8px">${parts[0]==="fixed"?"The monthly amount is counted automatically as committed spending. Change the amount here whenever your fixed cost changes.":parts[0]==="fund"?"This is a sinking fund; its monthly amount is added to the fund.":parts[0]==="cap"?"Unused money rolls forward up to the cap, then excess can be transferred.":"Spending is entered manually and unused budget can roll forward."}</div>
+    <div class="small" style="margin-top:8px">${parts[0]==="fixed"?"The monthly amount is counted automatically as committed spending. Change the amount here whenever your fixed cost changes.":parts[0]==="fund"?"Unused monthly allocation transfers into the fund at month-end. Spending uses this month’s allocation first, then the existing fund.":parts[0]==="cap"?"At month-end, unused allocation enters this pot up to its cap; excess goes to the selected destination. Spending beyond this month’s allocation uses the existing pot.":"Spending is entered manually and unused budget can roll forward."}</div>
    </div>`}).join("")}</div>
  <button class="primary" onclick="saveRules()">Save changes</button></div>
  <div class="card"><h2>Create a fund</h2><p class="sub">Make a new sinking fund whenever you need one. It will automatically become available as a transfer destination.</p>
@@ -235,59 +246,55 @@ function deleteFund(name){
  if(!confirm(`Delete the fund "${name}"? Its balance will be removed.`))return;
  delete state.cats[name];save();renderTab("settings");
 }
-function applyCapsForMonth(month){
- // Capped pots roll forward. Spending reduces the pot; monthly money is added;
- // anything above the cap is transferred to the selected destination.
- for(const [name,c] of Object.entries(state.cats)){
-   if(!c.rule.startsWith("cap:"))continue;
-   const p=c.rule.split(":"), cap=+p[1], dest=p.slice(2).join(":");
-   if(!dest || !state.cats[dest])continue;
-   const carried=c.balance||0;
-   const actual=state.tx.filter(x=>x.month===month&&x.cat===name).reduce((a,x)=>a+x.amount,0);
-   const incoming=state.transfers.filter(t=>t.month===month&&t.to===name).reduce((a,t)=>a+t.amount,0);
-   const outgoing=state.transfers.filter(t=>t.month===month&&t.from===name).reduce((a,t)=>a+t.amount,0);
-   const beforeTransfer=carried+c.monthly+incoming-outgoing-actual;
-   const already=state.transfers.filter(t=>t.month===month&&t.from===name&&t.to===dest).reduce((a,t)=>a+t.amount,0);
-   const excess=Math.max(0,beforeTransfer-cap);
-   const amount=Math.max(0,excess-already);
-   if(amount>0) state.transfers.push({id:crypto.randomUUID(),month,from:name,to:dest,amount});
- }
-}
 function monthBefore(k){
  let [y,m]=k.split("-").map(Number); m--; if(m===0){y--;m=12;}
  return y+"-"+String(m).padStart(2,"0");
-}
-function advanceMonths(){
- const now=key();
- let last=state.lastMonth||now;
- if(last===now)return;
- // Walk month by month so deficits and saved pots carry into the next month.
- while(last!==now){
-   applyCapsForMonth(last);
-   for(const c of Object.values(state.cats)){
-     if(c.rule!=="fixed") c.balance=(c.balance||0)+monthNetForOpening(c,last);
-   }
-   last=nextMonth(last);
-   state.lastMonth=last;
- }
- save();
 }
 function nextMonth(k){
  let [y,m]=k.split("-").map(Number); m++; if(m===13){y++;m=1;}
  return y+"-"+String(m).padStart(2,"0");
 }
-function monthNetForOpening(catObj,k){
- // Use the month that just closed to turn its opening balance into the next opening balance.
- const name=Object.keys(state.cats).find(n=>state.cats[n]===catObj);
- if(!name)return 0;
- const actual=state.tx.filter(x=>x.month===k&&x.cat===name).reduce((a,x)=>a+x.amount,0);
- const incoming=state.transfers.filter(t=>t.month===k&&t.to===name).reduce((a,t)=>a+t.amount,0);
- const outgoing=state.transfers.filter(t=>t.month===k&&t.from===name).reduce((a,t)=>a+t.amount,0);
- return (catObj.monthly||0)+incoming-outgoing-actual;
+function closeMonth(month){
+ const monthLabel=label(month);
+ // First roll each category forward. Sinking/capped categories use this month's allocation first;
+ // only spending beyond that allocation comes out of the existing fund balance.
+ for(const [name,c] of Object.entries(state.cats)){
+   if(c.rule==="fixed") continue;
+   const actual=actualFor(name,month), monthly=c.monthly||0;
+   c.balance=(c.balance||0)+monthly-actual;
+   if(c.rule==="fund"||c.rule.startsWith("cap:")){
+     if(monthly>actual){
+       state.transfers.push({id:crypto.randomUUID(),month,from:"Monthly budget",to:name,amount:monthly-actual,label:`End of month transfer (${monthLabel})`});
+     } else if(actual>monthly){
+       state.transfers.push({id:crypto.randomUUID(),month,from:name,to:"Spending",amount:actual-monthly,label:`Spending from existing fund (${monthLabel})`});
+     }
+   }
+ }
+ // Apply caps after all category balances have rolled forward, then move the excess to its destination.
+ for(const [name,c] of Object.entries(state.cats)){
+   if(!c.rule.startsWith("cap:")) continue;
+   const parts=c.rule.split(":"), cap=+parts[1], dest=parts.slice(2).join(":");
+   if((c.balance||0)>cap && dest && state.cats[dest]){
+     const excess=c.balance-cap;
+     c.balance=cap;
+     state.cats[dest].balance=(state.cats[dest].balance||0)+excess;
+     state.transfers.push({id:crypto.randomUUID(),month,from:name,to:dest,amount:excess,label:`End of month transfer (${monthLabel}) — excess from ${name}`});
+   }
+ }
 }
-function closeMonthAndApplyCaps(){advanceMonths();applyCapsForMonth(key());save();}
+function advanceMonths(){
+ const now=key();
+ let last=state.lastMonth||now;
+ if(last===now)return;
+ while(last!==now){
+   closeMonth(last);
+   last=nextMonth(last);
+   state.lastMonth=last;
+ }
+ save();
+}
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>renderTab(b.dataset.tab));
-closeMonthAndApplyCaps(key());
+advanceMonths();
 renderTab("month");
 if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
